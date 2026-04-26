@@ -28,17 +28,18 @@ Set a dedicated model for title generation in `~/.pi/agent/settings.json`:
 ```
 
 You can also include a thinking level suffix, like `provider/model:low`.
+If no suffix is provided, title generation defaults to `minimal` thinking so it does not inherit a slow high-reasoning chat setting.
 If `autoSessionTitles.model` is omitted, the extension falls back to pi's default model.
 
 ## Commands
 
 ### `/rename-session`
 
-Regenerates the current session title from the whole branch history.
+Regenerates the current session title from the current branch, filling as much of the configured title model's context window as possible.
 
 ## Notes
 
 - Initial auto-titles use a short recent-context snippet.
-- `/rename-session` uses a much larger context window for better accuracy.
-- The title is still kept short and clean for the session selector.
+- `/rename-session` reuses the same title prompt, but expands the conversation snippet to the title model's available context window for better accuracy.
+- Titles are kept short, lowercase, and punchier than default AI title-case sludge.
 - Custom title-model selection lives in `~/.pi/agent/settings.json` under `autoSessionTitles.model`.
