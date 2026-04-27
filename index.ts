@@ -2,35 +2,14 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { complete } from "@mariozechner/pi-ai";
-import { buildSessionContext, convertToLlm, serializeConversation } from "@mariozechner/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 
 const SETTINGS_FILE = join(process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent"), "settings.json");
 const SETTINGS_NAMESPACE = "autoSessionTitles";
 const VALID_THINKING_LEVELS = new Set(["minimal", "low", "medium", "high", "xhigh"]);
-const MAX_SNIPPET_MESSAGES = 10;
-const MAX_SNIPPET_CHARS = 6000;
-const MAX_FULL_SNIPPET_CHARS = 50000;
-const CHARS_PER_CONTEXT_TOKEN = 3.5;
-const CONTEXT_PROMPT_RESERVE_CHARS = 4000;
 const MAX_TITLE_LENGTH = 72;
 const MAX_TITLE_WORDS = 15;
 const DEFAULT_TITLE_THINKING_LEVEL: ThinkingLevel = "minimal";
-const REJECTED_TITLE_PHRASES = [
-	"optimize workflow",
-	"enhance productivity",
-	"streamline process",
-	"improve efficiency",
-	"boost productivity",
-	"gremlin",
-	"swamp",
-	"chaos",
-	"slop",
-	"make it sane",
-	"fix oauth callback race",
-	"rip out the brittle cache",
-	"stop playwright hanging",
-];
 
 type ThinkingLevel = "minimal" | "low" | "medium" | "high" | "xhigh";
 type ModelRef = { provider: string; modelId: string; thinkingLevel?: ThinkingLevel };
@@ -122,25 +101,42 @@ function resolveTitleModel(ctx: ExtensionContext): ModelRef | null {
 	};
 }
 
-function buildConversationSnippet(ctx: ExtensionContext, prompt?: string, maxMessages = MAX_SNIPPET_MESSAGES, maxChars = MAX_SNIPPET_CHARS): string {
-	const branch = ctx.sessionManager.getBranch();
-	const sessionContext = buildSessionContext(branch, ctx.sessionManager.getLeafId());
-	const llmMessages = convertToLlm(sessionContext.messages);
+function contentText(content: unknown): string {
+	if (typeof content === "string") return content;
+	return contentBlocksText(content, "text");
+}
 
-	if (prompt?.trim()) {
-		llmMessages.push({
-			role: "user",
-			content: [{ type: "text", text: prompt.trim() }],
-			timestamp: Date.now(),
-		});
-	}
+function contentBlocksText(content: unknown, type: "text" | "thinking"): string {
+	if (!Array.isArray(content)) return "";
+	return content
+		.map((part) => {
+			if (!part || typeof part !== "object") return "";
+			const block = part as { type?: unknown; text?: unknown; thinking?: unknown };
+			if (type === "text" && block.type === "text" && typeof block.text === "string") return block.text;
+			if (type === "thinking" && block.type === "thinking" && typeof block.thinking === "string") return block.thinking;
+			return "";
+		})
+		.filter(Boolean)
+		.join("\n");
+}
 
-	const recentMessages = maxMessages >= llmMessages.length ? llmMessages : llmMessages.slice(-maxMessages);
-	let snippet = serializeConversation(recentMessages);
-	if (snippet.length > maxChars) {
-		snippet = snippet.slice(snippet.length - maxChars);
+function buildConversationSnippet(ctx: ExtensionContext, prompt?: string): string {
+	const parts: string[] = [];
+	for (const entry of ctx.sessionManager.getBranch()) {
+		if (entry.type !== "message") continue;
+		const message = entry.message;
+		if (message.role === "user") {
+			const text = contentText(message.content);
+			if (text) parts.push(`[User]: ${text}`);
+		} else if (message.role === "assistant") {
+			const thinking = contentBlocksText(message.content, "thinking");
+			const text = contentBlocksText(message.content, "text");
+			if (thinking) parts.push(`[Assistant thinking]: ${thinking}`);
+			if (text) parts.push(`[Assistant]: ${text}`);
+		}
 	}
-	return snippet;
+	if (prompt?.trim()) parts.push(`[User]: ${prompt.trim()}`);
+	return parts.join("\n\n");
 }
 
 function sentenceCaseTitleCase(title: string): string {
@@ -233,7 +229,7 @@ function isBadTitle(value: string): boolean {
 	if (["ok", "okay", "done", "yes"].includes(lower)) return true;
 	if (/\b(?:instead\s+of|rather\s+than|such\s+as|as\s+a)$/i.test(value)) return true;
 	if (/\b(?:a|an|and|as|at|by|for|from|in|into|of|on|or|the|to|with|without)$/i.test(value)) return true;
-	return REJECTED_TITLE_PHRASES.some((phrase) => lower.includes(phrase));
+	return false;
 }
 
 function meaningfulWords(value: string): Set<string> {
@@ -264,21 +260,6 @@ function isGroundedTitle(title: string, snippet: string): boolean {
 	if (titleWords.size === 0) return false;
 	const snippetWords = meaningfulWords(snippet);
 	return [...titleWords].some((word) => snippetWords.has(word));
-}
-
-function getModelContextWindow(model: unknown): number | null {
-	if (!model || typeof model !== "object") return null;
-	const value = (model as { contextWindow?: unknown; context_window?: unknown }).contextWindow ?? (model as { context_window?: unknown }).context_window;
-	return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
-}
-
-function getFullSnippetCharLimit(ctx: ExtensionContext): number {
-	const modelRef = resolveTitleModel(ctx);
-	if (!modelRef) return MAX_FULL_SNIPPET_CHARS;
-	const apiModel = ctx.modelRegistry.find(modelRef.provider, modelRef.modelId);
-	const contextWindow = getModelContextWindow(apiModel);
-	if (!contextWindow) return MAX_FULL_SNIPPET_CHARS;
-	return Math.max(MAX_SNIPPET_CHARS, Math.floor(contextWindow * CHARS_PER_CONTEXT_TOKEN) - CONTEXT_PROMPT_RESERVE_CHARS);
 }
 
 function fallbackTitleFromSnippet(snippet: string): string {
@@ -372,9 +353,9 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	pi.registerCommand("rename-session", {
-		description: "Regenerate the current session title using the title model's full context window",
+		description: "Regenerate the current session title from the full user/assistant transcript",
 		handler: async (_args, ctx) => {
-			const snippet = buildConversationSnippet(ctx, undefined, Number.POSITIVE_INFINITY, getFullSnippetCharLimit(ctx));
+			const snippet = buildConversationSnippet(ctx);
 			const nextTitle = await generateTitle(ctx, snippet);
 			if (!nextTitle) {
 				ctx.ui.notify("Could not generate a session title", "warning");

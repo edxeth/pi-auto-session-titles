@@ -35,11 +35,11 @@ If `autoSessionTitles.model` is omitted, the extension falls back to pi's defaul
 
 ### `/rename-session`
 
-Regenerates the current session title from the current branch, filling as much of the configured title model's context window as possible.
+Regenerates the current session title from the current branch using the full user/assistant conversation transcript.
 
 ## Notes
 
-- Initial auto-titles use a short recent-context snippet.
-- `/rename-session` reuses the same title prompt, but expands the conversation snippet to the title model's available context window for better accuracy.
+- Title generation uses only user messages and assistant text/thinking from the current branch.
+- Tool calls, tool results, system prompts, available tool schemas, and other session metadata are excluded from the title prompt.
 - Titles are kept short, lowercase, and punchier than default AI title-case sludge.
 - Custom title-model selection lives in `~/.pi/agent/settings.json` under `autoSessionTitles.model`.
