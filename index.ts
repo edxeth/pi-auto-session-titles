@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { complete } from "@mariozechner/pi-ai";
+import { buildSessionContext, convertToLlm, serializeConversation } from "@mariozechner/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 
 const SETTINGS_FILE = join(process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent"), "settings.json");
@@ -121,40 +122,21 @@ function resolveTitleModel(ctx: ExtensionContext): ModelRef | null {
 	};
 }
 
-function extractText(content: unknown): string {
-	if (typeof content === "string") return content.trim();
-	if (!Array.isArray(content)) return "";
-
-	const parts: string[] = [];
-	for (const block of content) {
-		if (!block || typeof block !== "object") continue;
-		const text = (block as { type?: string; text?: string }).text;
-		if ((block as { type?: string }).type === "text" && typeof text === "string") {
-			parts.push(text);
-		}
-	}
-	return parts.join(" ").trim();
-}
-
 function buildConversationSnippet(ctx: ExtensionContext, prompt?: string, maxMessages = MAX_SNIPPET_MESSAGES, maxChars = MAX_SNIPPET_CHARS): string {
-	const entries = ctx.sessionManager.getBranch();
-	const messages: string[] = [];
-
-	for (const entry of entries) {
-		if (entry.type !== "message" || !("message" in entry)) continue;
-		const message = entry.message as { role?: string; content?: unknown };
-		if (message.role !== "user" && message.role !== "assistant") continue;
-		const text = extractText(message.content);
-		if (!text) continue;
-		messages.push(`${message.role === "user" ? "User" : "Assistant"}: ${text}`);
-	}
+	const branch = ctx.sessionManager.getBranch();
+	const sessionContext = buildSessionContext(branch, ctx.sessionManager.getLeafId());
+	const llmMessages = convertToLlm(sessionContext.messages);
 
 	if (prompt?.trim()) {
-		messages.push(`User: ${prompt.trim()}`);
+		llmMessages.push({
+			role: "user",
+			content: [{ type: "text", text: prompt.trim() }],
+			timestamp: Date.now(),
+		});
 	}
 
-	const recent = maxMessages >= messages.length ? messages : messages.slice(-maxMessages);
-	let snippet = recent.join("\n\n");
+	const recentMessages = maxMessages >= llmMessages.length ? llmMessages : llmMessages.slice(-maxMessages);
+	let snippet = serializeConversation(recentMessages);
 	if (snippet.length > maxChars) {
 		snippet = snippet.slice(snippet.length - maxChars);
 	}
@@ -228,7 +210,7 @@ function cleanTitle(raw: string): string {
 
 function titlePrompt(snippet: string, retrying = false): string {
 	return [
-		"Generate a concise, sentence-case title (3-15 words) that captures the main topic or goal of this coding session. The title should be clear enough that the user recognizes the session in a list. Use sentence case: capitalize only the first word and proper nouns.",
+		"Generate a concise, complete, sentence-case title (3-15 words) that captures the main topic or goal of this coding session. The title should be clear enough that the user recognizes the session in a list. Use sentence case: capitalize only the first word and proper nouns. Do not end with an incomplete phrase like 'instead of', 'with', 'for', or 'of'.",
 		"",
 		"Return JSON with a single \"title\" field.",
 		retrying ? "The previous attempt was too long, vague, unrelated, or malformed. Try again with a grounded title." : "",
@@ -249,6 +231,8 @@ function wordCount(value: string): number {
 function isBadTitle(value: string): boolean {
 	const lower = value.toLocaleLowerCase().trim();
 	if (["ok", "okay", "done", "yes"].includes(lower)) return true;
+	if (/\b(?:instead\s+of|rather\s+than|such\s+as|as\s+a)$/i.test(value)) return true;
+	if (/\b(?:a|an|and|as|at|by|for|from|in|into|of|on|or|the|to|with|without)$/i.test(value)) return true;
 	return REJECTED_TITLE_PHRASES.some((phrase) => lower.includes(phrase));
 }
 
@@ -390,7 +374,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("rename-session", {
 		description: "Regenerate the current session title using the title model's full context window",
 		handler: async (_args, ctx) => {
-			const snippet = buildConversationSnippet(ctx, undefined, undefined, getFullSnippetCharLimit(ctx));
+			const snippet = buildConversationSnippet(ctx, undefined, Number.POSITIVE_INFINITY, getFullSnippetCharLimit(ctx));
 			const nextTitle = await generateTitle(ctx, snippet);
 			if (!nextTitle) {
 				ctx.ui.notify("Could not generate a session title", "warning");
