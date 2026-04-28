@@ -40,6 +40,7 @@ Regenerates the current session title from the current branch using the full use
 
 ## Notes
 
+- Auto-title generation only fills blank session titles. If another extension or launcher pre-titles a session, that explicit title is preserved. Use `/rename-session` to regenerate manually.
 - Title generation uses only user messages and assistant text/thinking from the current branch.
 - Tool calls, tool results, system prompts, available tool schemas, and other session metadata are excluded from the title prompt.
 - Titles are kept short, lowercase, and punchier than default AI title-case sludge.

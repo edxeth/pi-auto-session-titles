@@ -273,8 +273,8 @@ function isGroundedTitle(title: string, snippet: string): boolean {
 function fallbackTitleFromSnippet(snippet: string): string {
 	const firstUserLine = snippet
 		.split(/\r?\n/)
-		.find((line) => line.startsWith("User:"))
-		?.replace(/^User:\s*/, "")
+		.find((line) => line.startsWith("[User]:"))
+		?.replace(/^\[User\]:\s*/, "")
 		.trim();
 	if (!firstUserLine) return "";
 	const words = firstUserLine.split(/\s+/).filter(Boolean).slice(0, MAX_TITLE_WORDS);
@@ -347,12 +347,14 @@ export default function (pi: ExtensionAPI) {
 		if (done) return;
 		done = true;
 		try {
+			const currentTitle = ctx.sessionManager.getSessionName();
+			if (currentTitle) return;
+
 			const snippet = buildConversationSnippet(ctx, prompt);
 			if (!snippet) return;
 
-			const currentTitle = ctx.sessionManager.getSessionName();
 			const nextTitle = await generateTitle(ctx, snippet);
-			if (nextTitle && nextTitle !== currentTitle) {
+			if (nextTitle) {
 				pi.setSessionName(nextTitle);
 			}
 		} catch {
