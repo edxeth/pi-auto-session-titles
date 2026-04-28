@@ -22,13 +22,14 @@ Set a dedicated model for title generation in `~/.pi/agent/settings.json`:
 {
   "autoSessionTitles": {
     "enabled": true,
-    "model": "anthropic/claude-haiku-4-5"
+    "provider": "zai-messages",
+    "model": "glm-5v-turbo",
+    "thinkingLevel": "high"
   }
 }
 ```
 
-You can also include a thinking level suffix, like `provider/model:low`.
-If no suffix is provided, title generation defaults to `minimal` thinking so it does not inherit a slow high-reasoning chat setting.
+If `thinkingLevel` is omitted, title generation defaults to `minimal` thinking so it does not inherit a slow high-reasoning chat setting.
 If `autoSessionTitles.model` is omitted, the extension falls back to pi's default model.
 
 ## Commands
@@ -42,4 +43,4 @@ Regenerates the current session title from the current branch using the full use
 - Title generation uses only user messages and assistant text/thinking from the current branch.
 - Tool calls, tool results, system prompts, available tool schemas, and other session metadata are excluded from the title prompt.
 - Titles are kept short, lowercase, and punchier than default AI title-case sludge.
-- Custom title-model selection lives in `~/.pi/agent/settings.json` under `autoSessionTitles.model`.
+- Custom title-model selection lives in `~/.pi/agent/settings.json` under `autoSessionTitles.provider`, `autoSessionTitles.model`, and `autoSessionTitles.thinkingLevel`.

@@ -16,7 +16,9 @@ type ModelRef = { provider: string; modelId: string; thinkingLevel?: ThinkingLev
 
 type AutoTitleSettings = {
 	enabled?: boolean;
+	provider?: string;
 	model?: string;
+	thinkingLevel?: string;
 };
 
 type SettingsFile = {
@@ -35,6 +37,10 @@ function readSettings(): SettingsFile {
 	} catch {
 		return {};
 	}
+}
+
+function validThinkingLevel(value?: string): ThinkingLevel | undefined {
+	return value && VALID_THINKING_LEVELS.has(value) ? (value as ThinkingLevel) : undefined;
 }
 
 function parseModelRef(spec: string, fallbackProvider?: string, fallbackThinking?: string): ModelRef | null {
@@ -61,9 +67,7 @@ function parseModelRef(spec: string, fallbackProvider?: string, fallbackThinking
 	}
 
 	if (!provider || !modelId) return null;
-	if (!thinkingLevel && fallbackThinking && VALID_THINKING_LEVELS.has(fallbackThinking)) {
-		thinkingLevel = fallbackThinking as ThinkingLevel;
-	}
+	if (!thinkingLevel) thinkingLevel = validThinkingLevel(fallbackThinking);
 
 	return { provider, modelId, thinkingLevel };
 }
@@ -74,7 +78,11 @@ function resolveTitleModel(ctx: ExtensionContext): ModelRef | null {
 	if (configured?.enabled === false) return null;
 
 	if (configured?.model) {
-		const fromConfig = parseModelRef(configured.model, settings.defaultProvider, DEFAULT_TITLE_THINKING_LEVEL);
+		const fromConfig = parseModelRef(
+			configured.model,
+			configured.provider ?? settings.defaultProvider,
+			configured.thinkingLevel ?? DEFAULT_TITLE_THINKING_LEVEL,
+		);
 		if (fromConfig) return fromConfig;
 	}
 
