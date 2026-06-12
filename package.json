@@ -1,0 +1,19 @@
+{
+  "name": "pi-auto-session-titles",
+  "version": "1.0.2",
+  "description": "Automatically generate session titles from conversation content",
+  "keywords": ["pi-package"],
+  "repository": {
+    "type": "git",
+    "url": "git@github.com:edxeth/pi-auto-session-titles.git"
+  },
+  "license": "MIT",
+  "main": "index.ts",
+  "pi": {
+    "extensions": ["./index.ts"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}
