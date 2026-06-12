@@ -51,10 +51,14 @@ function parseModelRef(spec: string, fallbackProvider?: string, fallbackThinking
 	let modelId = trimmed;
 	let thinkingLevel: ThinkingLevel | undefined = undefined;
 
-	const slashIndex = trimmed.indexOf("/");
-	if (slashIndex !== -1) {
-		provider = trimmed.slice(0, slashIndex).trim();
-		modelId = trimmed.slice(slashIndex + 1).trim();
+	// Only split on "/" to extract provider when one isn't already provided.
+	// When provider is known, the spec is the model ID (which may contain "/" for namespaced models like "openrouter/free").
+	if (!provider) {
+		const slashIndex = trimmed.indexOf("/");
+		if (slashIndex !== -1) {
+			provider = trimmed.slice(0, slashIndex).trim();
+			modelId = trimmed.slice(slashIndex + 1).trim();
+		}
 	}
 
 	const colonIndex = modelId.lastIndexOf(":");
@@ -86,18 +90,13 @@ function resolveTitleModel(ctx: ExtensionContext): ModelRef | null {
 		if (fromConfig) return fromConfig;
 	}
 
-	if (settings.defaultProvider && settings.defaultModel) {
+	if (settings.defaultModel) {
 		const fromDefaults = parseModelRef(
-			`${settings.defaultProvider}/${settings.defaultModel}`,
+			settings.defaultModel,
 			settings.defaultProvider,
 			DEFAULT_TITLE_THINKING_LEVEL,
 		);
 		if (fromDefaults) return fromDefaults;
-	}
-
-	if (settings.defaultModel) {
-		const fromModelOnly = parseModelRef(settings.defaultModel, settings.defaultProvider, DEFAULT_TITLE_THINKING_LEVEL);
-		if (fromModelOnly) return fromModelOnly;
 	}
 
 	const current = ctx.model;
