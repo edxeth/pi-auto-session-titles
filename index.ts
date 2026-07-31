@@ -323,7 +323,7 @@ export default function (pi: ExtensionAPI) {
 						apiKey: auth.apiKey,
 						headers: auth.headers,
 						env: auth.env,
-						reasoningEffort: modelRef.thinkingLevel,
+						reasoning: modelRef.thinkingLevel,
 					},
 				)
 				.result();
