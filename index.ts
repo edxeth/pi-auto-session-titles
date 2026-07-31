@@ -1,7 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { complete } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 const SETTINGS_FILE = join(process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent"), "settings.json");
@@ -298,27 +297,36 @@ export default function (pi: ExtensionAPI) {
 		const apiModel = ctx.modelRegistry.find(modelRef.provider, modelRef.modelId);
 		if (!apiModel) return "";
 
+		// Use the composed provider from modelRegistry so custom APIs
+		// registered by extensions resolve. Global pi-ai complete() only
+		// knows builtin APIs and throws for extension-registered ones.
+		const provider = ctx.modelRegistry.getProvider(apiModel.provider);
+		if (!provider) return "";
+
 		const auth = await ctx.modelRegistry.getApiKeyAndHeaders(apiModel);
 		if (!auth.ok || !auth.apiKey) return "";
 
 		const tryGenerate = async (retrying = false) => {
-			const response = await complete(
-				apiModel,
-				{
-					messages: [
-						{
-							role: "user",
-							content: [{ type: "text", text: titlePrompt(snippet, retrying) }],
-							timestamp: Date.now(),
-						},
-					],
-				},
-				{
-					apiKey: auth.apiKey,
-					headers: auth.headers,
-					reasoningEffort: modelRef.thinkingLevel,
-				},
-			);
+			const response = await provider
+				.streamSimple(
+					apiModel,
+					{
+						messages: [
+							{
+								role: "user",
+								content: [{ type: "text", text: titlePrompt(snippet, retrying) }],
+								timestamp: Date.now(),
+							},
+						],
+					},
+					{
+						apiKey: auth.apiKey,
+						headers: auth.headers,
+						env: auth.env,
+						reasoning: modelRef.thinkingLevel,
+					},
+				)
+				.result();
 
 			return response.content
 				.filter((part): part is { type: "text"; text: string } => part.type === "text")
