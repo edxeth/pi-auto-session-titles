@@ -13,7 +13,11 @@ const MAX_ASSISTANT_TEXT_LENGTH = 1000;
 const MAX_PATHS = 20;
 const MAX_PATH_LENGTH = 200;
 const MAX_AUTOMATIC_SNIPPET_LENGTH = 3000;
-const TITLE_REQUEST_TIMEOUT_MS = 15_000;
+const MAX_CONVERSATION_MESSAGE_LENGTH = 1500;
+const MAX_CONVERSATION_SNIPPET_LENGTH = 24000;
+// Worst-case "[100000 middle messages omitted]" marker plus its separator.
+const OMITTED_MARKER_RESERVE = 34;
+const TITLE_REQUEST_TIMEOUT_MS = 60_000;
 const DEFAULT_TITLE_THINKING_LEVEL: ThinkingLevel = "minimal";
 
 type ThinkingLevel = "minimal" | "low" | "medium" | "high" | "xhigh";
@@ -181,18 +185,38 @@ function buildAutomaticSnippet(rawInput: string, response: string, tools: Set<st
 }
 
 function buildConversationSnippet(ctx: ExtensionContext): string {
-	const parts: string[] = [];
+	const turns: string[] = [];
 	for (const entry of ctx.sessionManager.getBranch()) {
 		if (entry.type !== "message") continue;
 		const message = entry.message;
 		if (message.role === "user") {
 			const text = contentText(message.content);
-			if (text) parts.push(`[User]: ${text}`);
+			if (text) turns.push(`[User]: ${truncate(text, MAX_CONVERSATION_MESSAGE_LENGTH)}`);
 		} else if (message.role === "assistant") {
 			const text = textBlocksText(message.content);
-			if (text) parts.push(`[Assistant]: ${text}`);
+			if (text) turns.push(`[Assistant]: ${truncate(text, MAX_CONVERSATION_MESSAGE_LENGTH)}`);
 		}
 	}
+	if (turns.length === 0) return "";
+
+	// A title needs the opening goal and the recent tail, not every turn.
+	// Reserve budget for the opening turn, fill backwards from the newest
+	// turn, and collapse everything that does not fit into one marker so
+	// very large sessions stay inside the title model's context window.
+	const opening = turns[0];
+	const budget = MAX_CONVERSATION_SNIPPET_LENGTH - opening.length - OMITTED_MARKER_RESERVE;
+	const kept: string[] = [];
+	let used = 0;
+	let index = turns.length - 1;
+	for (; index >= 1; index--) {
+		const turn = turns[index];
+		const separator = kept.length > 0 ? 2 : 0;
+		if (used + separator + turn.length > budget) break;
+		kept.unshift(turn);
+		used += separator + turn.length;
+	}
+	const omitted = index;
+	const parts = omitted > 0 ? [opening, `[${omitted} middle messages omitted]`, ...kept] : [opening, ...kept];
 	return parts.join("\n\n");
 }
 

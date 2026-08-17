@@ -51,20 +51,23 @@ If you omit `autoSessionTitles.model`, the extension uses the default model of P
 ### `/rename-session`
 
 This command regenerates the session title from the current branch. It uses the full transcript between the user and the assistant.
+The transcript evidence is bounded: each message is capped at 1,500 characters and the total at 24,000 characters. The extension keeps the first message and the most recent messages, and replaces omitted middle turns with a marker.
 
 ## Notes
 
 - Automatic naming sets only blank session titles.
 - If another extension or launcher sets a title first, this extension keeps that title unchanged.
 - The `/rename-session` command provides manual title regeneration.
-- Automatic naming uses the original request, the final response from the assistant, and deduplicated tool names.
-- Automatic naming includes up to 20 normalized paths from these built-in tools:
+- Automatic naming uses the original request, the final response from the assistant, and tool names.
+- When the agent uses built-in file tools, automatic naming includes up to 20 normalized file paths.
+- These built-in tools provide a known path field:
   - `read`
   - `edit`
   - `write`
   - `grep`
   - `find`
   - `ls`
+- The extension does not extract file paths from custom tools or shell commands.
 - The extension does not send these items to the title model:
   - assistant thinking
   - tool-result contents
@@ -78,7 +81,8 @@ This command regenerates the session title from the current branch. It uses the 
 - A bare skill invocation, such as `/skill:migrate`, is not the session goal.
 - Automatic naming relies on the work that the agent reports and the files that the agent touches.
 - The extension limits each context field and the total input for automatic naming.
-- The extension stops a title-model request after 15 seconds.
+- The extension also limits the `/rename-session` transcript, so very large sessions do not exceed the title model's context window.
+- The extension stops a title-model request after 60 seconds.
 - The configured title model receives relevant paths. These paths can reveal project structure, but they do not contain file contents.
 - The extension does not change an automatic title after creation. Compaction does not start automatic naming again.
 - The extension keeps titles short and in sentence case. It does not use title case for all words.

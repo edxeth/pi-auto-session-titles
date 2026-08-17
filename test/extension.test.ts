@@ -249,6 +249,36 @@ describe("automatic session naming", () => {
 		expect(prompt).not.toContain("Secret abandoned OAuth hypothesis");
 	});
 
+	test("manual rename bounds the prompt for very large sessions", async () => {
+		const branch: unknown[] = [];
+		for (let index = 0; index < 300; index++) {
+			branch.push({
+				type: "message",
+				message: {
+					role: index % 2 === 0 ? "user" : "assistant",
+					content:
+						index % 2 === 0
+							? `Investigate the refresh token rotation bug, message ${index} ${"detail ".repeat(400)}`
+							: [
+									{ type: "thinking", thinking: "private reasoning" },
+									{ type: "text", text: `Refresh token analysis step ${index} ${"notes ".repeat(400)}` },
+								],
+				},
+			});
+		}
+		const harness = createHarness({ branch });
+
+		await harness.invokeCommand("rename-session");
+
+		const prompt = harness.providerPrompts[0] ?? "";
+		// 24,000-char snippet cap plus the fixed prompt scaffold (~900 chars).
+		expect(prompt.length).toBeLessThan(25_000);
+		expect(prompt).toContain("Investigate the refresh token rotation bug, message 0");
+		expect(prompt).toContain("Refresh token analysis step 299");
+		expect(prompt).toContain("omitted");
+		expect(harness.setNames).toEqual(["Fix refresh token handling"]);
+	});
+
 	test("does not use an errored assistant response as the agent summary", async () => {
 		const harness = createHarness();
 
@@ -427,7 +457,7 @@ describe("automatic session naming", () => {
 		const harness = createHarness({ neverResolve: true });
 		const originalSetTimeout = globalThis.setTimeout;
 		globalThis.setTimeout = ((callback: TimerHandler, delay?: number, ...args: unknown[]) => {
-			if (delay === 15_000) {
+			if (delay === 60_000) {
 				queueMicrotask(() => (callback as (...callbackArgs: unknown[]) => void)(...args));
 				return 1 as unknown as ReturnType<typeof setTimeout>;
 			}
