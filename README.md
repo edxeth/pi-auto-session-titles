@@ -86,6 +86,9 @@ The transcript evidence is bounded: each message is capped at 1,500 characters a
 - The configured title model receives relevant paths. These paths can reveal project structure, but they do not contain file contents.
 - The extension does not change an automatic title after creation. Compaction does not start automatic naming again.
 - The extension keeps titles short and in sentence case. It does not use title case for all words.
+- The title prompt states the character budget before generation. Titles are capped at 72 characters.
+- An invalid title (over length, over word count, incomplete ending, or ungrounded) triggers one regeneration. The retry prompt names the rejected title and the reason.
+- If regeneration still fails, the deterministic fallback applies: the opening message's first words, capped in length. Code never truncates a model title as the primary enforcement.
 - The configuration for the title model uses `autoSessionTitles.provider`, `autoSessionTitles.model`, and `autoSessionTitles.thinkingLevel` in `~/.pi/agent/settings.json`.
 
 ## Development

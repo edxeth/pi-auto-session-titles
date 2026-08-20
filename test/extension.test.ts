@@ -5,7 +5,9 @@ import autoSessionTitles from "../index";
 type EventHandler = (event: unknown, ctx: ExtensionContext) => unknown | Promise<unknown>;
 type CommandHandler = (args: string, ctx: ExtensionContext) => unknown | Promise<unknown>;
 
-function createHarness(options: { title?: string; deferTitle?: boolean; neverResolve?: boolean; branch?: unknown[] } = {}) {
+function createHarness(
+	options: { title?: string; titles?: string[]; deferTitle?: boolean; neverResolve?: boolean; branch?: unknown[] } = {},
+) {
 	const handlers = new Map<string, EventHandler[]>();
 	const commands = new Map<string, CommandHandler>();
 	const setNames: string[] = [];
@@ -57,8 +59,9 @@ function createHarness(options: { title?: string; deferTitle?: boolean; neverRes
 						result: async () => {
 							if (options.neverResolve) await new Promise<never>(() => {});
 							await deferredTitle;
+							const title = options.titles?.[providerPrompts.length - 1] ?? options.title ?? "Fix refresh token handling";
 							return {
-								content: [{ type: "text", text: JSON.stringify({ title: options.title ?? "Fix refresh token handling" }) }],
+								content: [{ type: "text", text: JSON.stringify({ title }) }],
 							};
 						},
 					};
@@ -510,5 +513,70 @@ describe("automatic session naming", () => {
 
 		expect(harness.providerPrompts).toEqual([]);
 		expect(harness.setNames).toEqual([]);
+	});
+});
+
+describe("title rule enforcement", () => {
+	const agentsmdBranch = [
+		{ type: "message", message: { role: "user", content: "Improve the agentsmd skill using Dex Horthy's improve-claude-md principles" } },
+		{ type: "message", message: { role: "assistant", content: [{ type: "text", text: "Improved the agentsmd skill and published it." }] } },
+	];
+
+	test("regenerates from the rejection instead of truncating mid-phrase", async () => {
+		const overlong = "Improve agentsmd skill using Dex Horthy's improve-claude-md, then benchmark and publish it";
+		const harness = createHarness({
+			branch: agentsmdBranch,
+			titles: [overlong, "Improve agentsmd skill from Dex Horthy's improve-claude-md"],
+		});
+
+		await harness.invokeCommand("rename-session");
+
+		expect(harness.providerPrompts).toHaveLength(2);
+		expect(harness.providerPrompts[0] ?? "").toContain("at most 72 characters");
+		const retryPrompt = harness.providerPrompts[1] ?? "";
+		expect(retryPrompt).toContain(overlong);
+		expect(retryPrompt).toContain(`${overlong.length} characters, limit is 72`);
+		expect(harness.setNames).toEqual(["Improve agentsmd skill from Dex Horthy's improve-claude-md"]);
+	});
+
+	test("falls back when the retry repeats the rejected overlong title", async () => {
+		const overlong = "Improve agentsmd skill using Dex Horthy's improve-claude-md, then benchmark and publish it";
+		const harness = createHarness({
+			branch: agentsmdBranch,
+			titles: [overlong, overlong],
+		});
+
+		await harness.invokeCommand("rename-session");
+
+		expect(harness.providerPrompts).toHaveLength(2);
+		expect(harness.setNames[0] ?? "").not.toBe("Improve agentsmd skill using Dex Horthy's improve-claude-md, then");
+		expect(harness.setNames).toEqual(["improve the agentsmd skill using dex horthy's improve-claude-md"]);
+	});
+
+	test("bounds the rejected-title echo in the retry prompt", async () => {
+		const huge = "X".repeat(5_000);
+		const harness = createHarness({
+			branch: agentsmdBranch,
+			titles: [huge, "Improve agentsmd skill from Dex Horthy's improve-claude-md"],
+		});
+
+		await harness.invokeCommand("rename-session");
+
+		expect(harness.providerPrompts).toHaveLength(2);
+		const retryPrompt = harness.providerPrompts[1] ?? "";
+		expect(retryPrompt).toContain("5000 characters, limit is 72");
+		expect(retryPrompt.length).toBeLessThan((harness.providerPrompts[0] ?? "").length + 400);
+		expect(harness.setNames).toEqual(["Improve agentsmd skill from Dex Horthy's improve-claude-md"]);
+	});
+
+	test("keeps the deterministic fallback for unusable first attempts", async () => {
+		const harness = createHarness({
+			branch: [{ type: "message", message: { role: "user", content: "Fix the refresh token rotation bug in the auth service" } }],
+			titles: [""],
+		});
+
+		await harness.invokeCommand("rename-session");
+
+		expect(harness.setNames).toEqual(["fix the refresh token rotation bug in the auth service"]);
 	});
 });
