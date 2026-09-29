@@ -3,7 +3,6 @@ import { homedir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import { isToolCallEventType, type ExtensionAPI, type ExtensionContext, type ToolCallEvent } from "@earendil-works/pi-coding-agent";
 
-const SETTINGS_FILE = join(process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent"), "settings.json");
 const SETTINGS_NAMESPACE = "autoSessionTitles";
 const VALID_THINKING_LEVELS = new Set(["minimal", "low", "medium", "high", "xhigh"]);
 const MAX_TITLE_LENGTH = 72;
@@ -24,6 +23,27 @@ const DEFAULT_TITLE_THINKING_LEVEL: ThinkingLevel = "minimal";
 type ThinkingLevel = "minimal" | "low" | "medium" | "high" | "xhigh";
 type ModelRef = { provider: string; modelId: string; thinkingLevel?: ThinkingLevel };
 
+/** Safe, user-facing reason why no title could be generated. Never carries credentials or raw provider payloads. */
+type TitleFailure =
+	| { readonly _tag: "disabled" }
+	| { readonly _tag: "noModel"; readonly detail: string }
+	| { readonly _tag: "auth"; readonly detail: string }
+	| { readonly _tag: "timeout" }
+	| { readonly _tag: "providerError"; readonly detail?: string }
+	| { readonly _tag: "invalidTitle"; readonly detail: string }
+	| { readonly _tag: "noEvidence" }
+	| { readonly _tag: "protectedTitle" };
+
+type TitleResult = { readonly ok: true; readonly title: string } | { readonly ok: false; readonly failure: TitleFailure };
+
+/** One provider request; failures are classified instead of thrown away. */
+type ProviderAttempt = { ok: true; text: string } | { ok: false; failure: TitleFailure };
+
+type TitleModelResolution =
+	| { readonly _tag: "ok"; readonly modelRef: ModelRef }
+	| { readonly _tag: "disabled" }
+	| { readonly _tag: "noModel"; readonly detail: string };
+
 type AutoTitleSettings = {
 	enabled?: boolean;
 	provider?: string;
@@ -39,9 +59,11 @@ type SettingsFile = {
 };
 
 function readSettings(): SettingsFile {
+	// Resolved per call (not at import time) so tests can isolate settings via PI_CODING_AGENT_DIR.
+	const file = join(process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent"), "settings.json");
 	try {
-		if (!existsSync(SETTINGS_FILE)) return {};
-		const raw = readFileSync(SETTINGS_FILE, "utf8");
+		if (!existsSync(file)) return {};
+		const raw = readFileSync(file, "utf8");
 		const parsed = JSON.parse(raw);
 		return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as SettingsFile) : {};
 	} catch {
@@ -86,10 +108,10 @@ function parseModelRef(spec: string, fallbackProvider?: string, fallbackThinking
 	return { provider, modelId, thinkingLevel };
 }
 
-function resolveTitleModel(ctx: ExtensionContext): ModelRef | null {
+function resolveTitleModel(ctx: ExtensionContext): TitleModelResolution {
 	const settings = readSettings();
 	const configured = settings[SETTINGS_NAMESPACE];
-	if (configured?.enabled === false) return null;
+	if (configured?.enabled === false) return { _tag: "disabled" };
 
 	if (configured?.model) {
 		const fromConfig = parseModelRef(
@@ -97,7 +119,7 @@ function resolveTitleModel(ctx: ExtensionContext): ModelRef | null {
 			configured.provider ?? settings.defaultProvider,
 			configured.thinkingLevel ?? DEFAULT_TITLE_THINKING_LEVEL,
 		);
-		if (fromConfig) return fromConfig;
+		if (fromConfig) return { _tag: "ok", modelRef: fromConfig };
 	}
 
 	if (settings.defaultModel) {
@@ -106,15 +128,20 @@ function resolveTitleModel(ctx: ExtensionContext): ModelRef | null {
 			settings.defaultProvider,
 			DEFAULT_TITLE_THINKING_LEVEL,
 		);
-		if (fromDefaults) return fromDefaults;
+		if (fromDefaults) return { _tag: "ok", modelRef: fromDefaults };
 	}
 
 	const current = ctx.model;
-	if (!current) return null;
+	if (!current) {
+		return { _tag: "noModel", detail: "no autoSessionTitles.model is configured and the session has no current model" };
+	}
 	return {
-		provider: String(current.provider),
-		modelId: current.id,
-		thinkingLevel: DEFAULT_TITLE_THINKING_LEVEL,
+		_tag: "ok",
+		modelRef: {
+			provider: String(current.provider),
+			modelId: current.id,
+			thinkingLevel: DEFAULT_TITLE_THINKING_LEVEL,
+		},
 	};
 }
 
@@ -166,6 +193,65 @@ function builtInToolPath(event: ToolCallEvent): string | undefined {
 
 function truncate(value: string, maxLength: number): string {
 	return value.length <= maxLength ? value : value.slice(0, maxLength).trimEnd();
+}
+
+// Diagnostics classify failures into a safe allowlist. Raw provider or
+// credential error text is never echoed: it can embed payloads or secrets.
+function classifyProviderErrorDetail(message: string): string | undefined {
+	const text = message.toLowerCase();
+	if (/\b429\b/.test(text) || text.includes("rate limit") || text.includes("too many requests")) {
+		return "rate limited by the provider (HTTP 429)";
+	}
+	if (/\b401\b/.test(text) || text.includes("unauthorized")) {
+		return "provider rejected the credentials (HTTP 401)";
+	}
+	if (/\b403\b/.test(text) || text.includes("forbidden")) {
+		return "provider refused the request (HTTP 403)";
+	}
+	if (
+		/\b5\d\d\b/.test(text) ||
+		text.includes("internal server error") ||
+		text.includes("bad gateway") ||
+		text.includes("service unavailable") ||
+		text.includes("overloaded")
+	) {
+		return "provider server error (HTTP 5xx)";
+	}
+	if (text.includes("fetch failed") || text.includes("network") || text.includes("econnrefused") || text.includes("enotfound") || text.includes("socket connection")) {
+		return "network request failed";
+	}
+	return undefined;
+}
+
+function classifyAuthErrorDetail(message: string, provider: string): string {
+	const text = message.toLowerCase();
+	if (text.includes("no api key found") || text.includes("requires a resolved api key")) {
+		return `no API key found for provider "${provider}"`;
+	}
+	return `credential resolution failed for provider "${provider}"`;
+}
+
+function describeTitleFailure(failure: TitleFailure): string {
+	switch (failure._tag) {
+		case "disabled":
+			return "automatic session titles are disabled in settings (autoSessionTitles.enabled is false)";
+		case "noModel":
+			return `no title model is available (${failure.detail})`;
+		case "auth":
+			return `title model authentication failed: ${failure.detail}`;
+		case "timeout":
+			return `the title request timed out after ${TITLE_REQUEST_TIMEOUT_MS / 1000} seconds`;
+		case "providerError":
+			return failure.detail ? `the title model request failed: ${failure.detail}` : "the title model request failed";
+		case "invalidTitle":
+			return `the model output was not a usable title (${failure.detail})`;
+		case "noEvidence":
+			return "this session has no conversation messages to summarize";
+		case "protectedTitle":
+			return "the current title is managed by the Ralph loop and was left unchanged";
+	}
+	const unhandled: never = failure;
+	return `Unhandled title failure: ${String(unhandled)}`;
 }
 
 function userIntent(rawInput: string): string {
@@ -398,23 +484,48 @@ export default function (pi: ExtensionAPI) {
 		return ctx.sessionManager.getBranch().some((entry) => entry.type === "message");
 	}
 
-	async function generateTitle(ctx: ExtensionContext, snippet: string): Promise<string> {
-		const modelRef = resolveTitleModel(ctx);
-		if (!modelRef) return "";
+	async function generateTitle(ctx: ExtensionContext, snippet: string): Promise<TitleResult> {
+		const resolution = resolveTitleModel(ctx);
+		if (resolution._tag === "disabled") return { ok: false, failure: resolution };
+		if (resolution._tag === "noModel") return { ok: false, failure: resolution };
+		const modelRef = resolution.modelRef;
 
 		const currentTitle = ctx.sessionManager.getSessionName();
-		if (/^Ralph loop iteration \d+\/\d+$/.test(currentTitle ?? "")) return "";
+		if (/^Ralph loop iteration \d+\/\d+$/.test(currentTitle ?? "")) {
+			return { ok: false, failure: { _tag: "protectedTitle" } };
+		}
+
 		const apiModel = ctx.modelRegistry.find(modelRef.provider, modelRef.modelId);
-		if (!apiModel) return "";
+		if (!apiModel) {
+			return {
+				ok: false,
+				failure: { _tag: "noModel", detail: `model "${modelRef.provider}/${modelRef.modelId}" is not in the model registry` },
+			};
+		}
 
 		// Use the composed provider from modelRegistry so custom APIs
 		// registered by extensions resolve. Global pi-ai complete() only
 		// knows builtin APIs and throws for extension-registered ones.
 		const provider = ctx.modelRegistry.getProvider(apiModel.provider);
-		if (!provider) return "";
+		if (!provider) {
+			return { ok: false, failure: { _tag: "noModel", detail: `provider "${apiModel.provider}" is not registered` } };
+		}
 
-		const auth = await ctx.modelRegistry.getApiKeyAndHeaders(apiModel);
-		if (!auth.ok || !auth.apiKey) return "";
+		// getApiKeyAndHeaders folds auth errors into ok:false today, but the
+		// contract does not promise non-rejection; treat rejection as auth failure.
+		const auth = await ctx.modelRegistry.getApiKeyAndHeaders(apiModel).catch(() => undefined);
+		if (!auth) {
+			return { ok: false, failure: { _tag: "auth", detail: `credential resolution failed for provider "${modelRef.provider}"` } };
+		}
+		if (!auth.ok) {
+			return { ok: false, failure: { _tag: "auth", detail: classifyAuthErrorDetail(auth.error, modelRef.provider) } };
+		}
+		if (!auth.apiKey) {
+			return { ok: false, failure: { _tag: "auth", detail: `no API key resolved for provider "${modelRef.provider}"` } };
+		}
+
+		if (!snippet) return { ok: false, failure: { _tag: "noEvidence" } };
+
 		const controller = new AbortController();
 		let timeout: ReturnType<typeof setTimeout> | undefined;
 		const timedOut = new Promise<never>((_resolve, reject) => {
@@ -424,8 +535,8 @@ export default function (pi: ExtensionAPI) {
 			}, TITLE_REQUEST_TIMEOUT_MS);
 		});
 
-		try {
-			const tryGenerate = async (rejection?: TitleRejection) => {
+		const attempt = async (rejection?: TitleRejection): Promise<ProviderAttempt> => {
+			try {
 				const response = await Promise.race([
 					provider
 						.streamSimple(
@@ -451,13 +562,46 @@ export default function (pi: ExtensionAPI) {
 					timedOut,
 				]);
 
-				return response.content
-					.filter((part): part is { type: "text"; text: string } => part.type === "text")
-					.map((part) => part.text)
-					.join(" ");
-			};
+				// The controller belongs to this request; a settled race after
+				// abort() means our timer won, even if the provider also returned.
+				if (controller.signal.aborted) return { ok: false, failure: { _tag: "timeout" } };
+				// result() resolves for provider failures too; an error response
+				// must never be mined for title text or turned into a fallback.
+				if (response.stopReason === "error" || response.stopReason === "aborted") {
+					return {
+						ok: false,
+						failure: {
+							_tag: "providerError",
+							detail: response.errorMessage
+								? classifyProviderErrorDetail(response.errorMessage)
+								: `request stopped early (${response.stopReason})`,
+						},
+					};
+				}
+				return {
+					ok: true,
+					text: response.content
+						.filter((part): part is { type: "text"; text: string } => part.type === "text")
+						.map((part) => part.text)
+						.join(" "),
+				};
+			} catch (error) {
+				if (controller.signal.aborted) return { ok: false, failure: { _tag: "timeout" } };
+				return {
+					ok: false,
+					failure: {
+						_tag: "providerError",
+						detail: classifyProviderErrorDetail(error instanceof Error ? error.message : String(error)),
+					},
+				};
+			}
+		};
 
-			let nextTitle = cleanTitle(await tryGenerate());
+		try {
+			const first = await attempt();
+			if (!first.ok) return { ok: false, failure: first.failure };
+
+			let nextTitle = cleanTitle(first.text);
 			let violations = titleViolations(nextTitle, snippet);
 
 			if (nextTitle && violations.length > 0) {
@@ -465,7 +609,9 @@ export default function (pi: ExtensionAPI) {
 				// The regenerated title is validated as-is. Rewriting an invalid
 				// retry (trimming it into range) could recreate the mid-phrase
 				// cut this loop exists to prevent, so failure falls back instead.
-				nextTitle = cleanTitle(await tryGenerate(rejection));
+				const retry = await attempt(rejection);
+				if (!retry.ok) return { ok: false, failure: retry.failure };
+				nextTitle = cleanTitle(retry.text);
 				violations = titleViolations(nextTitle, snippet);
 			}
 
@@ -474,9 +620,9 @@ export default function (pi: ExtensionAPI) {
 				violations = titleViolations(nextTitle, snippet);
 			}
 
-			return violations.length === 0 ? nextTitle : "";
-		} catch {
-			return "";
+			return violations.length === 0
+				? { ok: true, title: nextTitle }
+				: { ok: false, failure: { _tag: "invalidTitle", detail: violations.join("; ") } };
 		} finally {
 			if (timeout) clearTimeout(timeout);
 		}
@@ -490,14 +636,14 @@ export default function (pi: ExtensionAPI) {
 			if (currentTitle) return;
 			if (!snippet) return;
 
-			const nextTitle = await generateTitle(ctx, snippet);
+			const result = await generateTitle(ctx, snippet);
 			if (
-				nextTitle &&
+				result.ok &&
 				ctx.sessionManager.getSessionFile() === sessionFile &&
 				!ctx.sessionManager.getSessionName() &&
 				latestSessionInfoId(ctx) === sessionInfoId
 			) {
-				pi.setSessionName(nextTitle);
+				pi.setSessionName(result.title);
 			}
 		} catch {
 			// Leave the existing title unchanged on failure.
@@ -508,13 +654,16 @@ export default function (pi: ExtensionAPI) {
 		description: "Regenerate the current session title from the full user/assistant transcript",
 		handler: async (_args, ctx) => {
 			const snippet = buildConversationSnippet(ctx);
-			const nextTitle = await generateTitle(ctx, snippet);
-			if (!nextTitle) {
-				ctx.ui.notify("Could not generate a session title", "warning");
+			const result = await generateTitle(ctx, snippet);
+			if (!result.ok) {
+				ctx.ui.notify(
+					`Could not generate a session title: ${describeTitleFailure(result.failure)}. Use /name <title> to set one directly.`,
+					"warning",
+				);
 				return;
 			}
-			pi.setSessionName(nextTitle);
-			ctx.ui.notify(`Session renamed: ${nextTitle}`, "info");
+			pi.setSessionName(result.title);
+			ctx.ui.notify(`Session renamed: ${result.title}`, "info");
 		},
 	});
 

@@ -53,6 +53,10 @@ If you omit `autoSessionTitles.model`, the extension uses the default model of P
 This command regenerates the session title from the current branch. It uses the full transcript between the user and the assistant.
 The transcript evidence is bounded: each message is capped at 1,500 characters and the total at 24,000 characters. The extension keeps the first message and the most recent messages, and replaces omitted middle turns with a marker.
 
+When title generation fails, the warning names the reason: disabled configuration, a missing title model, authentication failure, a request timeout, a provider error, or output that failed title validation. Provider and credential errors are reduced to safe classifications (rate limit, credentials rejected, server error, network failure); raw error text, payloads, and credentials are never shown. On failure the current title is kept. `/name <title>` is the immediate workaround that sets a session name without AI.
+
+A failed title request never produces a fallback title. The deterministic fallback (the opening message's first words) applies only when the title model answered but its output failed validation.
+
 ## Notes
 
 - Automatic naming sets only blank session titles.
@@ -89,6 +93,7 @@ The transcript evidence is bounded: each message is capped at 1,500 characters a
 - The title prompt states the character budget before generation. Titles are capped at 72 characters.
 - An invalid title (over length, over word count, incomplete ending, or ungrounded) triggers one regeneration. The retry prompt names the rejected title and the reason.
 - If regeneration still fails, the deterministic fallback applies: the opening message's first words, capped in length. Code never truncates a model title as the primary enforcement.
+- A failed title request (provider error, timeout, missing model, authentication) never produces a fallback title; the existing title is kept.
 - The configuration for the title model uses `autoSessionTitles.provider`, `autoSessionTitles.model`, and `autoSessionTitles.thinkingLevel` in `~/.pi/agent/settings.json`.
 
 ## Development
