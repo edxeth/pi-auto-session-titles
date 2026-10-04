@@ -87,6 +87,7 @@ A failed title request never produces a fallback title. The deterministic fallba
 - The extension limits each context field and the total input for automatic naming.
 - The extension also limits the `/rename-session` transcript, so very large sessions do not exceed the title model's context window.
 - The extension stops a title-model request after 60 seconds.
+- The title request carries the Pi session id. OpenCode gateways route by session and reject requests without `x-opencode-session` (MissingSessionID).
 - The configured title model receives relevant paths. These paths can reveal project structure, but they do not contain file contents.
 - The extension does not change an automatic title after creation. Compaction does not start automatic naming again.
 - The extension keeps titles short and in sentence case. It does not use title case for all words.

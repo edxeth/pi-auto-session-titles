@@ -34,6 +34,7 @@ function createHarness(
 		providerErrorMessage?: string;
 		providerThrows?: string;
 		authThrows?: string;
+		sessionId?: string;
 	} = {},
 ) {
 	const handlers = new Map<string, EventHandler[]>();
@@ -41,6 +42,7 @@ function createHarness(
 	const setNames: string[] = [];
 	const providerPrompts: string[] = [];
 	const providerSignals: Array<AbortSignal | undefined> = [];
+	const providerSessionIds: Array<string | undefined> = [];
 	const notifications: Array<{ message: string; level: string }> = [];
 	let sessionName: string | undefined;
 	const entries: unknown[] = [];
@@ -72,6 +74,7 @@ function createHarness(
 			getEntries: () => entries,
 			getSessionName: () => sessionName,
 			getSessionFile: () => "/sessions/current.jsonl",
+			getSessionId: () => options.sessionId ?? "session-abc",
 			getLeafId: () => "leaf-1",
 		},
 		modelRegistry: {
@@ -83,10 +86,11 @@ function createHarness(
 						streamSimple: (
 							_model: unknown,
 							request: { messages: Array<{ content: Array<{ text: string }> }> },
-							streamOptions: { signal?: AbortSignal },
+							streamOptions: { signal?: AbortSignal; sessionId?: string },
 						) => {
 							providerPrompts.push(request.messages[0]?.content[0]?.text ?? "");
 							providerSignals.push(streamOptions.signal);
+							providerSessionIds.push(streamOptions.sessionId);
 							return {
 								result: async () => {
 									if (options.providerThrows) throw new Error(options.providerThrows);
@@ -120,6 +124,7 @@ function createHarness(
 	return {
 		providerPrompts,
 		providerSignals,
+		providerSessionIds,
 		notifications,
 		setNames,
 		releaseTitle() {
@@ -373,6 +378,42 @@ describe("automatic session naming", () => {
 		await harness.emit("session_shutdown", { type: "session_shutdown", reason: "quit" });
 
 		expect(harness.providerSignals[0]).toBeInstanceOf(AbortSignal);
+	});
+
+	test("sends the pi session id for manual renames", async () => {
+		const harness = createHarness({
+			branch: [
+				{ type: "message", message: { role: "user", content: "Fix the refresh token rotation bug" } },
+				{ type: "message", message: { role: "assistant", content: [{ type: "text", text: "Fixed the rotation." }] } },
+			],
+		});
+
+		await harness.invokeCommand("rename-session");
+
+		expect(harness.providerSessionIds).toEqual(["session-abc"]);
+	});
+
+	test("sends the pi session id for automatic naming too", async () => {
+		const harness = createHarness({ sessionId: "0199abcd-session" });
+
+		await harness.emit("session_start", { type: "session_start", reason: "startup" });
+		await harness.emit("input", {
+			type: "input",
+			text: "Investigate refresh token handling",
+			source: "interactive",
+			streamingBehavior: undefined,
+		});
+		await harness.emit("agent_start", { type: "agent_start" });
+		await harness.emit("agent_end", {
+			type: "agent_end",
+			messages: [{ role: "assistant", content: [{ type: "text", text: "Found refresh token reuse." }] }],
+		});
+		await harness.emit("agent_settled", { type: "agent_settled" });
+		await harness.emit("session_shutdown", { type: "session_shutdown", reason: "quit" });
+
+		// opencode.ai rejects title requests without x-opencode-session (MissingSessionID).
+		expect(harness.providerSessionIds).toEqual(["0199abcd-session"]);
+		expect(harness.setNames).toEqual(["Fix refresh token handling"]);
 	});
 
 	test("commits the latest staged idle input when the agent actually starts", async () => {

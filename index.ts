@@ -556,6 +556,10 @@ export default function (pi: ExtensionAPI) {
 							env: auth.env,
 							reasoning: modelRef.thinkingLevel,
 							signal: controller.signal,
+							// OpenCode gateways route by session and reject requests
+							// without x-opencode-session (MissingSessionID). The
+							// provider adds the header from this id.
+							sessionId: ctx.sessionManager.getSessionId(),
 						},
 						)
 						.result(),
