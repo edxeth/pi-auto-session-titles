@@ -1,6 +1,6 @@
 {
   "name": "pi-auto-session-titles",
-  "version": "1.1.3",
+  "version": "1.1.4",
   "description": "Automatically generate session titles from conversation content",
   "keywords": ["pi-package"],
   "repository": {
