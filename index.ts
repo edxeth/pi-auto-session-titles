@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, relative, resolve } from "node:path";
+import { normalizeContext } from "@earendil-works/pi-ai";
 import { isToolCallEventType, type ExtensionAPI, type ExtensionContext, type ToolCallEvent } from "@earendil-works/pi-coding-agent";
 
 const SETTINGS_NAMESPACE = "autoSessionTitles";
@@ -541,7 +542,7 @@ export default function (pi: ExtensionAPI) {
 					provider
 						.streamSimple(
 						apiModel,
-						{
+						normalizeContext({
 							messages: [
 								{
 									role: "user",
@@ -549,13 +550,15 @@ export default function (pi: ExtensionAPI) {
 									timestamp: Date.now(),
 								},
 							],
-						},
+						}),
 						{
 							apiKey: auth.apiKey,
 							headers: auth.headers,
 							env: auth.env,
 							reasoning: modelRef.thinkingLevel,
 							signal: controller.signal,
+							// Pass the Pi session ID to the provider.
+							sessionId: ctx.sessionManager.getSessionId(),
 						},
 						)
 						.result(),
